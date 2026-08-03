@@ -126,15 +126,9 @@ if not st.session_state.logged_in:
 
 # ==================== 辅助函数：安全提取列名 ====================
 def safe_rename_ohlc(df):
-    """
-    将 yfinance 返回的 DataFrame 列名统一为小写 'open','high','low','close'
-    支持单级列名和 MultiIndex 列名
-    """
     if df.empty:
         return df
-    # 处理多级列名（有时 yfinance 会返回 (Price, Open) 这样的元组）
     if isinstance(df.columns, pd.MultiIndex):
-        # 找到包含 'Open' 等的列
         new_columns = {}
         for col in df.columns:
             col_lower = tuple(c.lower() for c in col)
@@ -147,11 +141,9 @@ def safe_rename_ohlc(df):
             elif 'close' in col_lower:
                 new_columns[col] = 'close'
         df = df.rename(columns=new_columns)
-        # 只保留 OHLC 列
         keep = [col for col in df.columns if col in ['open','high','low','close']]
         df = df[keep]
     else:
-        # 单级列名
         rename_map = {}
         for col in df.columns:
             col_lower = col.lower()
@@ -164,24 +156,20 @@ def safe_rename_ohlc(df):
             elif 'close' in col_lower:
                 rename_map[col] = 'close'
         df = df.rename(columns=rename_map)
-        # 只保留 OHLC
         df = df[['open','high','low','close']]
     return df
 
 # ==================== 数据获取函数 ====================
 def get_data(ticker, period_str):
     """下载港股数据，月线/周线通过日线合成，分钟线用原生或自定义"""
-    # ---- 月线、周线：用日线重采样，避免 yfinance 直接下载失败 ----
+    # 月线、周线：用日线重采样
     if period_str in ["1mo", "1wk"]:
-        # 下载 2 年日线数据
         df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
         if df_daily is None or df_daily.empty:
             return None
         df_daily = safe_rename_ohlc(df_daily)
         if df_daily.empty:
             return None
-
-        # 重采样为月线（月末）或周线（周五）
         rule = "M" if period_str == "1mo" else "W"
         df_resampled = df_daily.resample(rule).agg({
             'open': 'first',
@@ -191,7 +179,7 @@ def get_data(ticker, period_str):
         }).dropna()
         return df_resampled
 
-    # ---- 日线：直接下载（已使用 3 个月数据，够 KDJ 计算） ----
+    # 日线
     if period_str == "1d":
         df = yf.download(ticker, period="3mo", interval="1d", progress=False)
         if df is None or df.empty:
@@ -201,7 +189,7 @@ def get_data(ticker, period_str):
             df.index = df.index.tz_localize(None)
         return df
 
-    # ---- 原生分钟线 ----
+    # 原生分钟线
     if period_str in YF_INTERVALS:
         df = yf.download(ticker, period="7d", interval=period_str, progress=False)
         if df is None or df.empty:
@@ -211,7 +199,7 @@ def get_data(ticker, period_str):
             df.index = df.index.tz_localize(None)
         return df
 
-    # ---- 自定义合成周期（120min、85min） ----
+    # 自定义合成周期
     if period_str in CUSTOM_INTERVALS:
         base = CUSTOM_INTERVALS[period_str]["base"]
         rule = CUSTOM_INTERVALS[period_str]["rule"]
@@ -229,8 +217,33 @@ def get_data(ticker, period_str):
 
     return None
 
+@st.cache_data(ttl=3600)
+def load_and_calc(ticker, period_str):
+    """加载数据，计算 KDJ 和均线"""
+    df = get_data(ticker, period_str)
+    if df is None or df.empty:
+        return None
+
+    for ma in MA_PERIODS:
+        df[f'MA{ma}'] = df['close'].rolling(window=ma).mean()
+
+    low_min = df['low'].rolling(window=KDJ_N).min()
+    high_max = df['high'].rolling(window=KDJ_N).max()
+    rsv = (df['close'] - low_min) / (high_max - low_min) * 100
+    k = rsv.ewm(com=KDJ_M1-1, adjust=False).mean()
+    d = k.ewm(com=KDJ_M2-1, adjust=False).mean()
+    j = 3 * k - 2 * d
+    df['K'] = k
+    df['D'] = d
+    df['J'] = j
+
+    result = df.dropna()
+    if result.empty:
+        return None
+    return result
+
 def get_daily_kdj(ticker):
-    """获取日线级别 KDJ，用于叠加到分钟图"""
+    """获取日线级别 KDJ"""
     df_daily = yf.download(ticker, period="3mo", interval="1d", progress=False)
     if df_daily.empty:
         return None
@@ -285,7 +298,6 @@ def delete_mark(mark_id):
 # ==================== 主界面 ====================
 st.title("📈 港股 KDJ 标记工具")
 
-# ---- 侧边栏 ----
 with st.sidebar:
     st.write(f"👤 已登录：{st.session_state.username}")
     if st.button("退出登录"):
@@ -318,7 +330,6 @@ with st.sidebar:
     st.text_input("J值超卖阈值", value="0", disabled=True)
     st.caption("功能开发中...")
 
-# ---- 股票选择 ----
 col1, col2 = st.columns([3, 1])
 with col1:
     fixed_cols = st.columns(len(FIXED_STOCKS))
@@ -336,14 +347,11 @@ if "selected_stock" not in st.session_state:
 
 current_stock = st.session_state.selected_stock
 
-# ---- 周期选择 ----
 period_label = st.selectbox("选择周期", list(PERIOD_MAP.keys()))
 period_str = PERIOD_MAP[period_label]
 
-# ---- 叠加日线 KDJ ----
 show_daily_kdj = st.checkbox("叠加日线 KDJ（仅分钟周期有效）", value=False)
 
-# ---- 数据加载 ----
 with st.spinner("正在下载数据..."):
     df = load_and_calc(current_stock, period_str)
 
@@ -353,14 +361,13 @@ if df is None:
 
 st.success(f"✅ 已加载 {len(df)} 条数据")
 
-# 日线 KDJ 叠加
 daily_kdj = None
 if show_daily_kdj and period_label not in ["月线", "周线", "日线"]:
     daily_kdj = get_daily_kdj(current_stock)
     if daily_kdj is None:
         st.warning("无法获取日线 KDJ 数据")
 
-# ==================== 绘图 ====================
+# ---- 绘图 ----
 if df.index.tz is not None:
     df.index = df.index.tz_localize(None)
 
@@ -372,7 +379,6 @@ fig = make_subplots(
     subplot_titles=(f"{current_stock} K线 & 均线", "KDJ 指标")
 )
 
-# ---- 上图：K线与均线 ----
 fig.add_trace(
     go.Candlestick(
         x=df.index,
@@ -399,7 +405,6 @@ for i, ma in enumerate(MA_PERIODS):
             row=1, col=1
         )
 
-# ---- 下图：KDJ ----
 for key, color, dash in [('K', 'blue', None), ('D', 'orange', None), ('J', 'red', 'dot')]:
     if key in df.columns:
         fig.add_trace(
@@ -410,7 +415,6 @@ for key, color, dash in [('K', 'blue', None), ('D', 'orange', None), ('J', 'red'
             row=2, col=1
         )
 
-# ---- 叠加日线 KDJ ----
 if daily_kdj is not None:
     combined = pd.concat([df[['K']], daily_kdj], axis=1).ffill()
     for val, color in [('KDaily', 'cyan'), ('DDaily', 'magenta'), ('JDaily', 'yellow')]:
@@ -424,7 +428,6 @@ if daily_kdj is not None:
                 row=2, col=1
             )
 
-# ---- 买卖标记 ----
 marks = get_marks(st.session_state.username, current_stock)
 for mark in marks:
     mark_id, mark_time, price, direction, remark = mark
@@ -457,9 +460,8 @@ fig.update_yaxes(title_text="KDJ", row=2, col=1, range=[-20, 120])
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ==================== 标记管理面板 ====================
+# ---- 标记管理 ----
 st.subheader("✏️ 买卖标记管理")
-
 tab_add, tab_view, tab_modify = st.tabs(["添加标记", "查看/删除", "修改标记"])
 
 with tab_add:
