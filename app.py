@@ -134,19 +134,25 @@ def get_data(ticker, period_str, days_back=7):
     获取港股分钟/日/周/月数据。
     对于自定义周期，用更细粒度数据合成。
     """
-    # 处理月线、周线、日线直接下载
-  if period_str in ["1mo", "1wk", "1d"]:
-      if period_str == "1d":
-          df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-      elif period_str == "1wk":
-          df = yf.download(ticker, period="6mo", interval="1wk", progress=False)
-      else:
-          df = yf.download(ticker, period="2y", interval="1mo", progress=False)
+    # 处理月线、周线、日线 —— 需要更长的历史保证 KDJ 计算
+    if period_str in ["1mo", "1wk", "1d"]:
+        if period_str == "1d":
+            df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+        elif period_str == "1wk":
+            df = yf.download(ticker, period="6mo", interval="1wk", progress=False)
+        else:  # 1mo
+            df = yf.download(ticker, period="2y", interval="1mo", progress=False)
+        
+        if df is None or df.empty:
+            return None
+        df = df[['Open','High','Low','Close']]
+        df.columns = ['open','high','low','close']
+        return df
 
     # 对于分钟线，用 period="7d" 获取7天内最高分辨率数据
     if period_str in YF_INTERVALS:
         df = yf.download(ticker, period="7d", interval=period_str, progress=False)
-        if df.empty:
+        if df is None or df.empty:
             return None
         df = df[['Open','High','Low','Close']]
         df.columns = ['open','high','low','close']
@@ -157,7 +163,7 @@ def get_data(ticker, period_str, days_back=7):
         base = CUSTOM_INTERVALS[period_str]["base"]
         rule = CUSTOM_INTERVALS[period_str]["rule"]
         df_base = yf.download(ticker, period="7d", interval=base, progress=False)
-        if df_base.empty:
+        if df_base is None or df_base.empty:
             return None
         df_base.columns = ['Open','High','Low','Close','Volume']
         # 重采样为自定义周期
