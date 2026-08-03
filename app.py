@@ -175,21 +175,31 @@ def get_data(ticker, period_str):
     
     try:
         # ---- 月线、周线：用日线重采样 ----
+                # ---- 月线、周线：用日线重采样 ----
         if period_str in ["1mo", "1wk"]:
             st.write("使用日线合成...")
             # 尝试多个周期，避免偶尔下载失败
+            df_daily = None
             for try_period in ["2y", "5y", "max"]:
                 st.write(f"  尝试下载日线，周期参数：{try_period}")
-                df_daily = yf.download(ticker, period=try_period, interval="1d", progress=False)
-                if df_daily is not None and not df_daily.empty:
+                df_tmp = yf.download(ticker, period=try_period, interval="1d", progress=False)
+                if df_tmp is not None and not df_tmp.empty:
+                    df_daily = df_tmp
+                    st.write(f"  下载成功，行数：{len(df_daily)}，列名示例：{df_daily.columns.tolist()[:3]}")
                     break
+                else:
+                    st.write(f"  下载失败或为空")
             if df_daily is None or df_daily.empty:
                 st.warning("日线下载为空，返回 None")
                 return None
+
+            st.write("执行 safe_rename_ohlc...")
             df_daily = safe_rename_ohlc(df_daily)
+            st.write(f"重命名后形状：{df_daily.shape}, 列名：{df_daily.columns.tolist()}")
             if df_daily.empty:
                 st.warning("日线处理后为空")
                 return None
+
             rule = "M" if period_str == "1mo" else "W"
             df_resampled = df_daily.resample(rule).agg({
                 'open': 'first',
@@ -197,7 +207,9 @@ def get_data(ticker, period_str):
                 'low': 'min',
                 'close': 'last'
             }).dropna()
-            st.write(f"合成后行数：{len(df_resampled)}")
+            st.write(f"重采样后行数：{len(df_resampled)}")
+            if df_resampled.empty:
+                st.warning("重采样后数据为空")
             return df_resampled
 
         # ---- 日线 ----
