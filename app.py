@@ -170,17 +170,49 @@ def safe_rename_ohlc(df):
 
 # ==================== 数据获取函数 ====================
 def get_data(ticker, period_str):
-    """下载港股数据，支持自定义周期合成"""
-    # 处理月线、周线、日线，需要更长历史以保证 KDJ 计算
-    if period_str == "1mo":
-        df = yf.download(ticker, period="2y", interval="1mo", progress=False)
-    elif period_str == "1wk":
-        df = yf.download(ticker, period="6mo", interval="1wk", progress=False)
-    elif period_str == "1d":
+    """下载港股数据，月线/周线通过日线合成，分钟线用原生或自定义"""
+    # ---- 月线、周线：用日线重采样，避免 yfinance 直接下载失败 ----
+    if period_str in ["1mo", "1wk"]:
+        # 下载 2 年日线数据
+        df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
+        if df_daily is None or df_daily.empty:
+            return None
+        df_daily = safe_rename_ohlc(df_daily)
+        if df_daily.empty:
+            return None
+
+        # 重采样为月线（月末）或周线（周五）
+        rule = "M" if period_str == "1mo" else "W"
+        df_resampled = df_daily.resample(rule).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last'
+        }).dropna()
+        return df_resampled
+
+    # ---- 日线：直接下载（已使用 3 个月数据，够 KDJ 计算） ----
+    if period_str == "1d":
         df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-    elif period_str in YF_INTERVALS:
+        if df is None or df.empty:
+            return None
+        df = safe_rename_ohlc(df)
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        return df
+
+    # ---- 原生分钟线 ----
+    if period_str in YF_INTERVALS:
         df = yf.download(ticker, period="7d", interval=period_str, progress=False)
-    elif period_str in CUSTOM_INTERVALS:
+        if df is None or df.empty:
+            return None
+        df = safe_rename_ohlc(df)
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        return df
+
+    # ---- 自定义合成周期（120min、85min） ----
+    if period_str in CUSTOM_INTERVALS:
         base = CUSTOM_INTERVALS[period_str]["base"]
         rule = CUSTOM_INTERVALS[period_str]["rule"]
         df_base = yf.download(ticker, period="7d", interval=base, progress=False)
@@ -194,44 +226,8 @@ def get_data(ticker, period_str):
             'close': 'last'
         }).dropna()
         return df_resampled
-    else:
-        return None
 
-    if df is None or df.empty:
-        return None
-
-    # 统一列名并去除时区
-    df = safe_rename_ohlc(df)
-    if df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
-    return df
-
-@st.cache_data(ttl=3600)
-def load_and_calc(ticker, period_str):
-    """加载数据，计算 KDJ 和均线"""
-    df = get_data(ticker, period_str)
-    if df is None or df.empty:
-        return None
-
-    # 计算均线
-    for ma in MA_PERIODS:
-        df[f'MA{ma}'] = df['close'].rolling(window=ma).mean()
-
-    # 计算 KDJ
-    low_min = df['low'].rolling(window=KDJ_N).min()
-    high_max = df['high'].rolling(window=KDJ_N).max()
-    rsv = (df['close'] - low_min) / (high_max - low_min) * 100
-    k = rsv.ewm(com=KDJ_M1-1, adjust=False).mean()
-    d = k.ewm(com=KDJ_M2-1, adjust=False).mean()
-    j = 3 * k - 2 * d
-    df['K'] = k
-    df['D'] = d
-    df['J'] = j
-
-    result = df.dropna()
-    if result.empty:
-        return None
-    return result
+    return None
 
 def get_daily_kdj(ticker):
     """获取日线级别 KDJ，用于叠加到分钟图"""
