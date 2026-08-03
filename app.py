@@ -28,9 +28,7 @@ PERIOD_MAP = {
     "15分钟": "15min",
     "5分钟": "5min",
 }
-# yfinance 原生支持的间隔
 YF_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
-# 自定义周期：用更细粒度合成
 CUSTOM_INTERVALS = {
     "120min": {"base": "5m", "rule": "2h"},
     "85min":  {"base": "5m", "rule": "85min"},
@@ -65,7 +63,6 @@ def init_db():
                   direction TEXT,
                   remark TEXT,
                   FOREIGN KEY (username) REFERENCES users(username))''')
-    # 创建默认用户 admin/admin
     default_user = "admin"
     default_pass = hashlib.sha256("admin".encode()).hexdigest()
     try:
@@ -101,7 +98,6 @@ def register_user(username, password):
         conn.close()
         return False
 
-# 登录状态管理
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
@@ -128,6 +124,50 @@ if not st.session_state.logged_in:
                 st.error("用户名已存在")
     st.stop()
 
+# ==================== 辅助函数：安全提取列名 ====================
+def safe_rename_ohlc(df):
+    """
+    将 yfinance 返回的 DataFrame 列名统一为小写 'open','high','low','close'
+    支持单级列名和 MultiIndex 列名
+    """
+    if df.empty:
+        return df
+    # 处理多级列名（有时 yfinance 会返回 (Price, Open) 这样的元组）
+    if isinstance(df.columns, pd.MultiIndex):
+        # 找到包含 'Open' 等的列
+        new_columns = {}
+        for col in df.columns:
+            col_lower = tuple(c.lower() for c in col)
+            if 'open' in col_lower:
+                new_columns[col] = 'open'
+            elif 'high' in col_lower:
+                new_columns[col] = 'high'
+            elif 'low' in col_lower:
+                new_columns[col] = 'low'
+            elif 'close' in col_lower:
+                new_columns[col] = 'close'
+        df = df.rename(columns=new_columns)
+        # 只保留 OHLC 列
+        keep = [col for col in df.columns if col in ['open','high','low','close']]
+        df = df[keep]
+    else:
+        # 单级列名
+        rename_map = {}
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'open' in col_lower:
+                rename_map[col] = 'open'
+            elif 'high' in col_lower:
+                rename_map[col] = 'high'
+            elif 'low' in col_lower:
+                rename_map[col] = 'low'
+            elif 'close' in col_lower:
+                rename_map[col] = 'close'
+        df = df.rename(columns=rename_map)
+        # 只保留 OHLC
+        df = df[['open','high','low','close']]
+    return df
+
 # ==================== 数据获取函数 ====================
 def get_data(ticker, period_str):
     """下载港股数据，支持自定义周期合成"""
@@ -139,7 +179,6 @@ def get_data(ticker, period_str):
     elif period_str == "1d":
         df = yf.download(ticker, period="3mo", interval="1d", progress=False)
     elif period_str in YF_INTERVALS:
-        # 分钟线，近 7 天
         df = yf.download(ticker, period="7d", interval=period_str, progress=False)
     elif period_str in CUSTOM_INTERVALS:
         base = CUSTOM_INTERVALS[period_str]["base"]
@@ -147,8 +186,7 @@ def get_data(ticker, period_str):
         df_base = yf.download(ticker, period="7d", interval=base, progress=False)
         if df_base is None or df_base.empty:
             return None
-        # 重命名为标准列名（yfinance 有时返回大小写混合）
-        df_base.columns = [col.lower() for col in df_base.columns]
+        df_base = safe_rename_ohlc(df_base)
         df_resampled = df_base.resample(rule).agg({
             'open': 'first',
             'high': 'max',
@@ -162,11 +200,8 @@ def get_data(ticker, period_str):
     if df is None or df.empty:
         return None
 
-    # 统一列名为小写
-    df.columns = [col.lower() for col in df.columns]
-    # 只保留需要的列
-    df = df[['open', 'high', 'low', 'close']]
-    # 去除时区信息
+    # 统一列名并去除时区
+    df = safe_rename_ohlc(df)
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
     return df
@@ -203,7 +238,7 @@ def get_daily_kdj(ticker):
     df_daily = yf.download(ticker, period="3mo", interval="1d", progress=False)
     if df_daily.empty:
         return None
-    df_daily.columns = [col.lower() for col in df_daily.columns]
+    df_daily = safe_rename_ohlc(df_daily)
     if df_daily.index.tz is not None:
         df_daily.index = df_daily.index.tz_localize(None)
 
@@ -290,19 +325,16 @@ with st.sidebar:
 # ---- 股票选择 ----
 col1, col2 = st.columns([3, 1])
 with col1:
-    # 固定股票按钮
     fixed_cols = st.columns(len(FIXED_STOCKS))
     for i, code in enumerate(FIXED_STOCKS):
         if fixed_cols[i].button(code, use_container_width=True):
             st.session_state.selected_stock = code
             st.session_state.manual_code = ""
-    # 手动输入代码
     manual_code = st.text_input("或手动输入港股代码（如 0700.HK）", key="manual_code")
     if manual_code:
         if st.button("查看手动代码"):
             st.session_state.selected_stock = manual_code.upper()
 
-# 默认选中第一支
 if "selected_stock" not in st.session_state:
     st.session_state.selected_stock = FIXED_STOCKS[0]
 
@@ -333,7 +365,6 @@ if show_daily_kdj and period_label not in ["月线", "周线", "日线"]:
         st.warning("无法获取日线 KDJ 数据")
 
 # ==================== 绘图 ====================
-# 确保无时区
 if df.index.tz is not None:
     df.index = df.index.tz_localize(None)
 
@@ -383,9 +414,8 @@ for key, color, dash in [('K', 'blue', None), ('D', 'orange', None), ('J', 'red'
             row=2, col=1
         )
 
-# ---- 叠加日线 KDJ（虚线） ----
+# ---- 叠加日线 KDJ ----
 if daily_kdj is not None:
-    # 将日线数据向前填充到分钟索引
     combined = pd.concat([df[['K']], daily_kdj], axis=1).ffill()
     for val, color in [('KDaily', 'cyan'), ('DDaily', 'magenta'), ('JDaily', 'yellow')]:
         if val in combined.columns:
@@ -445,7 +475,6 @@ with tab_add:
     with col_a3:
         mark_remark = st.selectbox("备注", REMARK_OPTIONS)
     with col_a4:
-        # 自动匹配最近时间的价格
         try:
             mark_dt = pd.to_datetime(mark_time)
             if mark_dt in df.index:
