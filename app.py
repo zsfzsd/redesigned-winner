@@ -175,17 +175,25 @@ def get_data(ticker, period_str, days_back=7):
 @st.cache_data(ttl=3600)
 def load_and_calc(ticker, period_str):
     """加载数据，计算KDJ和均线，返回DataFrame"""
-    df = None
     try:
         df = get_data(ticker, period_str)
     except Exception as e:
-        st.error(f"数据获取失败（{ticker} {period_str}）：{e}")
+        st.error(f"❌ 数据获取异常（{ticker} {period_str}）：{e}")
         return None
 
-    if df is None or df.empty:
-        if df is not None:
-            st.warning(f"{ticker} 在周期 {period_str} 下无数据（可能非交易时间或代码错误）")
+    # 诊断输出
+    if df is None:
+        st.warning(f"⚠️ get_data 返回 None，代码：{ticker}，周期：{period_str}")
         return None
+    if df.empty:
+        st.warning(f"⚠️ 数据为空 DataFrame，代码：{ticker}，周期：{period_str}")
+        # 还可以打印列名看看
+        st.write("返回的列：", df.columns.tolist())
+        return None
+
+    # 先显示一下前几行，确认有内容
+    st.success(f"✅ 成功获取 {len(df)} 条数据")
+    st.dataframe(df.head(3), use_container_width=True)
 
     # 计算均线
     for ma in MA_PERIODS:
