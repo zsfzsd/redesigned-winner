@@ -129,43 +129,44 @@ if not st.session_state.logged_in:
 def safe_rename_ohlc(df):
     """
     将 yfinance 返回的 DataFrame 列名统一为小写 'open','high','low','close'
-    支持单级列名和 MultiIndex 列名（yfinance 通常返回 ('Open', 'TICKER') 形式）
+    支持单级列名和 MultiIndex 列名
     """
     if df.empty:
         return df
 
+    # 处理 MultiIndex（yfinance 常见格式：('Open', 'TICKER') ）
     if isinstance(df.columns, pd.MultiIndex):
-        new_columns = {}
+        new_data = {}
         for col in df.columns:
-            # col 是元组，例如 ('Open', '3690.HK')，取第一个元素判断
             price_type = col[0].lower()
             if 'open' in price_type:
-                new_columns[col] = 'open'
+                new_data['open'] = df[col]
             elif 'high' in price_type:
-                new_columns[col] = 'high'
+                new_data['high'] = df[col]
             elif 'low' in price_type:
-                new_columns[col] = 'low'
+                new_data['low'] = df[col]
             elif 'close' in price_type:
-                new_columns[col] = 'close'
-        df = df.rename(columns=new_columns)
-        # 只保留需要的列
-        keep = [col for col in df.columns if col in ['open','high','low','close']]
-        df = df[keep]
-    else:
-        rename_map = {}
-        for col in df.columns:
-            col_lower = col.lower()
-            if 'open' in col_lower:
-                rename_map[col] = 'open'
-            elif 'high' in col_lower:
-                rename_map[col] = 'high'
-            elif 'low' in col_lower:
-                rename_map[col] = 'low'
-            elif 'close' in col_lower:
-                rename_map[col] = 'close'
-        df = df.rename(columns=rename_map)
-        df = df[['open','high','low','close']]
-    return df
+                new_data['close'] = df[col]
+        if not new_data:
+            return pd.DataFrame()
+        return pd.DataFrame(new_data, index=df.index)
+
+    # 处理单级列名
+    rename_map = {}
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'open' in col_lower:
+            rename_map[col] = 'open'
+        elif 'high' in col_lower:
+            rename_map[col] = 'high'
+        elif 'low' in col_lower:
+            rename_map[col] = 'low'
+        elif 'close' in col_lower:
+            rename_map[col] = 'close'
+    df = df.rename(columns=rename_map)
+    # 只保留需要的列
+    keep = [col for col in df.columns if col in ['open','high','low','close']]
+    return df[keep]
 
 # ==================== 数据获取函数（无缓存，带完整诊断） ====================
 def get_data(ticker, period_str):
