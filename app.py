@@ -11,13 +11,21 @@ import traceback
 
 # ==================== 页面配置 ====================
 st.set_page_config(
-    page_title="港股 KDJ 标记工具",
+    page_title="孟令文的港股通小助手",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ==================== 常量 ====================
-FIXED_STOCKS = ["3690.HK", "2015.HK", "2228.HK", "9868.HK", "0981.HK", "9880.HK", "1810.HK"]
+FIXED_STOCKS = [
+    ("3690.HK", "美团"),
+    ("2015.HK", "理想汽车"),
+    ("2228.HK", "晶门半导体"),
+    ("9868.HK", "小鹏汽车"),
+    ("0981.HK", "中芯国际"),
+    ("9880.HK", "优必选"),
+    ("1810.HK", "小米集团"),
+]
 PERIOD_MAP = {
     "月线": "1mo",
     "周线": "1wk",
@@ -125,16 +133,11 @@ if not st.session_state.logged_in:
                 st.error("用户名已存在")
     st.stop()
 
-# ==================== 辅助函数：安全提取列名 ====================
+# ==================== 辅助函数 ====================
 def safe_rename_ohlc(df):
-    """
-    将 yfinance 返回的 DataFrame 列名统一为小写 'open','high','low','close'
-    支持单级列名和 MultiIndex 列名
-    """
+    """统一列名为 open,high,low,close"""
     if df.empty:
         return df
-
-    # 处理 MultiIndex（yfinance 常见格式：('Open', 'TICKER') ）
     if isinstance(df.columns, pd.MultiIndex):
         new_data = {}
         for col in df.columns:
@@ -150,56 +153,39 @@ def safe_rename_ohlc(df):
         if not new_data:
             return pd.DataFrame()
         return pd.DataFrame(new_data, index=df.index)
+    else:
+        rename_map = {}
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'open' in col_lower:
+                rename_map[col] = 'open'
+            elif 'high' in col_lower:
+                rename_map[col] = 'high'
+            elif 'low' in col_lower:
+                rename_map[col] = 'low'
+            elif 'close' in col_lower:
+                rename_map[col] = 'close'
+        df = df.rename(columns=rename_map)
+        keep = [col for col in df.columns if col in ['open','high','low','close']]
+        return df[keep]
 
-    # 处理单级列名
-    rename_map = {}
-    for col in df.columns:
-        col_lower = col.lower()
-        if 'open' in col_lower:
-            rename_map[col] = 'open'
-        elif 'high' in col_lower:
-            rename_map[col] = 'high'
-        elif 'low' in col_lower:
-            rename_map[col] = 'low'
-        elif 'close' in col_lower:
-            rename_map[col] = 'close'
-    df = df.rename(columns=rename_map)
-    # 只保留需要的列
-    keep = [col for col in df.columns if col in ['open','high','low','close']]
-    return df[keep]
-
-# ==================== 数据获取函数（无缓存，带完整诊断） ====================
+# ==================== 数据获取 ====================
 def get_data(ticker, period_str):
-    """下载港股数据，月线/周线通过日线合成，分钟线用原生或自定义"""
-    st.write(f"🔍 正在尝试下载 {ticker} 的 {period_str} 数据...")
-    
+    """下载港股数据，月线/周线通过日线合成"""
     try:
-        # ---- 月线、周线：用日线重采样 ----
-                # ---- 月线、周线：用日线重采样 ----
+        # 月线、周线：日线合成
         if period_str in ["1mo", "1wk"]:
-            st.write("使用日线合成...")
-            # 尝试多个周期，避免偶尔下载失败
             df_daily = None
             for try_period in ["2y", "5y", "max"]:
-                st.write(f"  尝试下载日线，周期参数：{try_period}")
                 df_tmp = yf.download(ticker, period=try_period, interval="1d", progress=False)
                 if df_tmp is not None and not df_tmp.empty:
                     df_daily = df_tmp
-                    st.write(f"  下载成功，行数：{len(df_daily)}，列名示例：{df_daily.columns.tolist()[:3]}")
                     break
-                else:
-                    st.write(f"  下载失败或为空")
             if df_daily is None or df_daily.empty:
-                st.warning("日线下载为空，返回 None")
                 return None
-
-            st.write("执行 safe_rename_ohlc...")
             df_daily = safe_rename_ohlc(df_daily)
-            st.write(f"重命名后形状：{df_daily.shape}, 列名：{df_daily.columns.tolist()}")
             if df_daily.empty:
-                st.warning("日线处理后为空")
                 return None
-
             rule = "ME" if period_str == "1mo" else "W-FRI"
             df_resampled = df_daily.resample(rule).agg({
                 'open': 'first',
@@ -207,48 +193,37 @@ def get_data(ticker, period_str):
                 'low': 'min',
                 'close': 'last'
             }).dropna()
-            st.write(f"重采样后行数：{len(df_resampled)}")
-            if df_resampled.empty:
-                st.warning("重采样后数据为空")
             return df_resampled
 
-        # ---- 日线 ----
+        # 日线
         if period_str == "1d":
-            st.write("下载日线...")
             df = yf.download(ticker, period="3mo", interval="1d", progress=False)
             if df is None or df.empty:
-                st.warning("日线下载为空")
                 return None
             df = safe_rename_ohlc(df)
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             return df
 
-        # ---- 原生分钟线（60m, 30m, 15m, 5m 等） ----
+        # 原生分钟线
         if period_str in YF_INTERVALS:
-            st.write(f"下载分钟线 {period_str}，使用 30 天数据以保证 KDJ 计算...")
             df = yf.download(ticker, period="30d", interval=period_str, progress=False)
             if df is None or df.empty:
-                st.warning("分钟线下载为空")
                 return None
             df = safe_rename_ohlc(df)
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
-            st.write(f"下载到 {len(df)} 行")
             return df
 
-        # ---- 自定义合成周期（120min、85min） ----
+        # 自定义合成周期（120min、85min）
         if period_str in CUSTOM_INTERVALS:
             base = CUSTOM_INTERVALS[period_str]["base"]
             rule = CUSTOM_INTERVALS[period_str]["rule"]
-            st.write(f"使用 {base} 合成 {period_str}（下载 30 天数据）...")
             df_base = yf.download(ticker, period="30d", interval=base, progress=False)
             if df_base is None or df_base.empty:
-                st.warning(f"{base} 数据为空，无法合成")
                 return None
             df_base = safe_rename_ohlc(df_base)
             if df_base.empty:
-                st.warning(f"{base} 处理后为空")
                 return None
             df_resampled = df_base.resample(rule).agg({
                 'open': 'first',
@@ -256,36 +231,23 @@ def get_data(ticker, period_str):
                 'low': 'min',
                 'close': 'last'
             }).dropna()
-            st.write(f"合成后行数：{len(df_resampled)}")
             return df_resampled
-
-        st.warning(f"不支持的周期: {period_str}")
+        return None
+    except Exception:
         return None
 
-    except Exception as e:
-        st.error(f"❌ get_data 发生异常: {e}")
-        st.code(traceback.format_exc())
-        return None
-
-# ⚠️ 注意：暂时取消缓存，确保每次诊断都是最新结果
 def load_and_calc(ticker, period_str):
-    """加载数据，计算 KDJ 和均线（自动跳过无法计算的均线）"""
-    st.write(f"调用 load_and_calc: {ticker} {period_str}")
+    """加载数据，计算 KDJ 和均线"""
     df = get_data(ticker, period_str)
     if df is None or df.empty:
-        st.warning("load_and_calc: 数据为空或None")
         return None
 
-    st.write(f"数据列名: {df.columns.tolist()}, 行数: {len(df)}")
-
-    # 均线：只计算数据量足够的
+    # 均线（跳过数据量不足的）
     for ma in MA_PERIODS:
         if len(df) >= ma:
             df[f'MA{ma}'] = df['close'].rolling(window=ma).mean()
-        else:
-            st.info(f"数据量({len(df)})不足以计算 MA{ma}，已跳过")
 
-    # KDJ 计算
+    # KDJ
     low_min = df['low'].rolling(window=KDJ_N).min()
     high_max = df['high'].rolling(window=KDJ_N).max()
     rsv = (df['close'] - low_min) / (high_max - low_min) * 100
@@ -296,16 +258,11 @@ def load_and_calc(ticker, period_str):
     df['D'] = d
     df['J'] = j
 
-    # 只删除核心列为空的行（不要求均线全部有值）
     result = df.dropna(subset=['open', 'high', 'low', 'close', 'K', 'D', 'J'])
-    if result.empty:
-        st.warning("KDJ 计算后有效数据为空（可能数据量不足 KDJ 周期）")
-        return None
-    st.success(f"KDJ 计算完成，最终有效行数: {len(result)}")
-    return result
-    
+    return result if not result.empty else None
+
 def get_daily_kdj(ticker):
-    """获取日线级别 KDJ"""
+    """日线 KDJ 叠加数据"""
     df_daily = yf.download(ticker, period="3mo", interval="1d", progress=False)
     if df_daily.empty:
         return None
@@ -358,8 +315,9 @@ def delete_mark(mark_id):
     conn.close()
 
 # ==================== 主界面 ====================
-st.title("📈 港股 KDJ 标记工具")
+st.title("📈 孟令文的港股通小助手")
 
+# ---- 侧边栏 ----
 with st.sidebar:
     st.write(f"👤 已登录：{st.session_state.username}")
     if st.button("退出登录"):
@@ -392,11 +350,13 @@ with st.sidebar:
     st.text_input("J值超卖阈值", value="0", disabled=True)
     st.caption("功能开发中...")
 
+# ---- 股票选择 ----
 col1, col2 = st.columns([3, 1])
 with col1:
     fixed_cols = st.columns(len(FIXED_STOCKS))
-    for i, code in enumerate(FIXED_STOCKS):
-        if fixed_cols[i].button(code, use_container_width=True):
+    for i, (code, name) in enumerate(FIXED_STOCKS):
+        button_label = f"{code} {name}"
+        if fixed_cols[i].button(button_label, use_container_width=True):
             st.session_state.selected_stock = code
             st.session_state.manual_code = ""
     manual_code = st.text_input("或手动输入港股代码（如 0700.HK）", key="manual_code")
@@ -405,20 +365,18 @@ with col1:
             st.session_state.selected_stock = manual_code.upper()
 
 if "selected_stock" not in st.session_state:
-    st.session_state.selected_stock = FIXED_STOCKS[0]
+    st.session_state.selected_stock = FIXED_STOCKS[0][0]
 
 current_stock = st.session_state.selected_stock
 
+# ---- 周期选择 ----
 period_label = st.selectbox("选择周期", list(PERIOD_MAP.keys()))
 period_str = PERIOD_MAP[period_label]
 
+# ---- 叠加日线 KDJ ----
 show_daily_kdj = st.checkbox("叠加日线 KDJ（仅分钟周期有效）", value=False)
 
-# 强制清除 Streamlit 服务器端缓存（一次性）
-if st.button("🧹 清除服务器缓存"):
-    st.cache_data.clear()
-    st.success("服务器缓存已清除，请刷新页面")
-
+# ---- 数据加载 ----
 with st.spinner("正在下载数据..."):
     df = load_and_calc(current_stock, period_str)
 
@@ -428,6 +386,7 @@ if df is None:
 
 st.success(f"✅ 已加载 {len(df)} 条数据")
 
+# 日线 KDJ 叠加
 daily_kdj = None
 if show_daily_kdj and period_label not in ["月线", "周线", "日线"]:
     daily_kdj = get_daily_kdj(current_stock)
@@ -446,6 +405,7 @@ fig = make_subplots(
     subplot_titles=(f"{current_stock} K线 & 均线", "KDJ 指标")
 )
 
+# K线
 fig.add_trace(
     go.Candlestick(
         x=df.index,
@@ -460,6 +420,7 @@ fig.add_trace(
     row=1, col=1
 )
 
+# 均线
 colors = ['blue', 'orange', 'purple', 'brown']
 for i, ma in enumerate(MA_PERIODS):
     col_name = f'MA{ma}'
@@ -472,6 +433,7 @@ for i, ma in enumerate(MA_PERIODS):
             row=1, col=1
         )
 
+# KDJ
 for key, color, dash in [('K', 'blue', None), ('D', 'orange', None), ('J', 'red', 'dot')]:
     if key in df.columns:
         fig.add_trace(
@@ -482,6 +444,7 @@ for key, color, dash in [('K', 'blue', None), ('D', 'orange', None), ('J', 'red'
             row=2, col=1
         )
 
+# 日线 KDJ 叠加
 if daily_kdj is not None:
     combined = pd.concat([df[['K']], daily_kdj], axis=1).ffill()
     for val, color in [('KDaily', 'cyan'), ('DDaily', 'magenta'), ('JDaily', 'yellow')]:
@@ -495,6 +458,7 @@ if daily_kdj is not None:
                 row=2, col=1
             )
 
+# 买卖标记
 marks = get_marks(st.session_state.username, current_stock)
 for mark in marks:
     mark_id, mark_time, price, direction, remark = mark
@@ -527,8 +491,9 @@ fig.update_yaxes(title_text="KDJ", row=2, col=1, range=[-20, 120])
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ---- 标记管理 ----
+# ==================== 标记管理面板 ====================
 st.subheader("✏️ 买卖标记管理")
+
 tab_add, tab_view, tab_modify = st.tabs(["添加标记", "查看/删除", "修改标记"])
 
 with tab_add:
@@ -595,4 +560,6 @@ with tab_modify:
     else:
         st.info("暂无标记可修改")
 
-st.caption(f"数据覆盖范围：{period_label}，最后更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+# ---- 页脚 ----
+st.markdown("---")
+st.caption("开发者：孟令文的东东老婆")
