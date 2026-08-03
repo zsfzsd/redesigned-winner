@@ -160,7 +160,7 @@ def safe_rename_ohlc(df):
         df = df[['open','high','low','close']]
     return df
 
-# ==================== 数据获取函数（带诊断） ====================
+# ==================== 数据获取函数（无缓存，带完整诊断） ====================
 def get_data(ticker, period_str):
     """下载港股数据，月线/周线通过日线合成，分钟线用原生或自定义"""
     st.write(f"🔍 正在尝试下载 {ticker} 的 {period_str} 数据...")
@@ -194,7 +194,9 @@ def get_data(ticker, period_str):
             if df is None or df.empty:
                 st.warning("日线下载为空")
                 return None
+            st.write(f"yfinance 返回 {len(df)} 行，列名: {df.columns.tolist()}")
             df = safe_rename_ohlc(df)
+            st.write(f"safe_rename_ohlc 后，列名: {df.columns.tolist()}, 形状: {df.shape}")
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             st.success(f"日线下载成功，行数：{len(df)}")
@@ -240,11 +242,12 @@ def get_data(ticker, period_str):
         st.code(traceback.format_exc())
         return None
 
-@st.cache_data(ttl=3600)
+# ⚠️ 注意：暂时取消缓存，确保每次诊断都是最新结果
 def load_and_calc(ticker, period_str):
-    """加载数据，计算 KDJ 和均线"""
+    """加载数据，计算 KDJ 和均线（无缓存版）"""
     st.write(f"调用 load_and_calc: {ticker} {period_str}")
     df = get_data(ticker, period_str)
+    st.write(f"get_data 返回: 类型 {type(df)}, 是否空: {df.empty if df is not None else 'None'}")
     if df is None or df.empty:
         st.warning("load_and_calc: 数据为空或None")
         return None
@@ -379,6 +382,11 @@ period_label = st.selectbox("选择周期", list(PERIOD_MAP.keys()))
 period_str = PERIOD_MAP[period_label]
 
 show_daily_kdj = st.checkbox("叠加日线 KDJ（仅分钟周期有效）", value=False)
+
+# 强制清除 Streamlit 服务器端缓存（一次性）
+if st.button("🧹 清除服务器缓存"):
+    st.cache_data.clear()
+    st.success("服务器缓存已清除，请刷新页面")
 
 with st.spinner("正在下载数据..."):
     df = load_and_calc(current_stock, period_str)
