@@ -24,10 +24,10 @@ PERIOD_MAP = {
     "日线": "1d",
     "120分钟": "120min",
     "85分钟": "85min",
-    "60分钟": "60min",
-    "30分钟": "30min",
-    "15分钟": "15min",
-    "5分钟": "5min",
+    "60分钟": "60m",
+    "30分钟": "30m",
+    "15分钟": "15m",
+    "5分钟": "5m",
 }
 YF_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
 CUSTOM_INTERVALS = {
@@ -192,7 +192,7 @@ def get_data(ticker, period_str):
                 'low': 'min',
                 'close': 'last'
             }).dropna()
-            st.success(f"合成成功，行数：{len(df_resampled)}")
+            st.write(f"合成后行数：{len(df_resampled)}")
             return df_resampled
 
         # 日线
@@ -202,15 +202,12 @@ def get_data(ticker, period_str):
             if df is None or df.empty:
                 st.warning("日线下载为空")
                 return None
-            st.write(f"yfinance 返回 {len(df)} 行，列名: {df.columns.tolist()}")
             df = safe_rename_ohlc(df)
-            st.write(f"safe_rename_ohlc 后，列名: {df.columns.tolist()}, 形状: {df.shape}")
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
-            st.success(f"日线下载成功，行数：{len(df)}")
             return df
 
-        # 原生分钟线
+        # 原生分钟线（60m/30m/15m/5m 等）
         if period_str in YF_INTERVALS:
             st.write(f"下载分钟线 {period_str} ...")
             df = yf.download(ticker, period="7d", interval=period_str, progress=False)
@@ -220,26 +217,28 @@ def get_data(ticker, period_str):
             df = safe_rename_ohlc(df)
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
-            st.success(f"分钟线下载成功，行数：{len(df)}")
             return df
 
-        # 自定义合成周期
+        # 自定义合成周期（120min、85min）
         if period_str in CUSTOM_INTERVALS:
             base = CUSTOM_INTERVALS[period_str]["base"]
             rule = CUSTOM_INTERVALS[period_str]["rule"]
-            st.write(f"使用 {base} 合成 {period_str} ...")
-            df_base = yf.download(ticker, period="7d", interval=base, progress=False)
+            st.write(f"使用 {base} 合成 {period_str}（下载 30 天数据）...")
+            df_base = yf.download(ticker, period="30d", interval=base, progress=False)
             if df_base is None or df_base.empty:
                 st.warning(f"{base} 数据为空，无法合成")
                 return None
             df_base = safe_rename_ohlc(df_base)
+            if df_base.empty:
+                st.warning(f"{base} 处理后为空")
+                return None
             df_resampled = df_base.resample(rule).agg({
                 'open': 'first',
                 'high': 'max',
                 'low': 'min',
                 'close': 'last'
             }).dropna()
-            st.success(f"合成成功，行数：{len(df_resampled)}")
+            st.write(f"合成后行数：{len(df_resampled)}")
             return df_resampled
 
         st.warning(f"不支持的周期: {period_str}")
