@@ -214,6 +214,7 @@ def load_and_calc(ticker, period_str):
     df['K'] = k
     df['D'] = d
     df['J'] = j
+    st.write("最终要绘图的数据：", df[['close','K','D','J']].tail())
     return df.dropna()
 
 def get_daily_kdj(ticker):
