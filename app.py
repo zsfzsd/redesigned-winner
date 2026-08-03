@@ -175,8 +175,16 @@ def get_data(ticker, period_str, days_back=7):
 @st.cache_data(ttl=3600)
 def load_and_calc(ticker, period_str):
     """加载数据，计算KDJ和均线，返回DataFrame"""
+    df = None
+    try:
+        df = get_data(ticker, period_str)
+    except Exception as e:
+        st.error(f"数据获取失败（{ticker} {period_str}）：{e}")
+        return None
+
     if df is None or df.empty:
-        st.error(f"数据获取失败，请确认代码 {ticker} 在 Yahoo Finance 中存在。")
+        if df is not None:
+            st.warning(f"{ticker} 在周期 {period_str} 下无数据（可能非交易时间或代码错误）")
         return None
 
     # 计算均线
