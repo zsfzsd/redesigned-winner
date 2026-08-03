@@ -135,14 +135,13 @@ def get_data(ticker, period_str, days_back=7):
     对于自定义周期，用更细粒度数据合成。
     """
     # 处理月线、周线、日线直接下载
-    if period_str in ["1mo", "1wk", "1d"]:
-        df = yf.download(ticker, period="6mo" if period_str in ["1mo","1wk"] else "7d",
-                         interval=period_str, progress=False)
-        if df.empty:
-            return None
-        df = df[['Open','High','Low','Close']]
-        df.columns = ['open','high','low','close']
-        return df
+  if period_str in ["1mo", "1wk", "1d"]:
+      if period_str == "1d":
+          df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+      elif period_str == "1wk":
+          df = yf.download(ticker, period="6mo", interval="1wk", progress=False)
+      else:
+          df = yf.download(ticker, period="2y", interval="1mo", progress=False)
 
     # 对于分钟线，用 period="7d" 获取7天内最高分辨率数据
     if period_str in YF_INTERVALS:
