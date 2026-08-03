@@ -127,21 +127,28 @@ if not st.session_state.logged_in:
 
 # ==================== 辅助函数：安全提取列名 ====================
 def safe_rename_ohlc(df):
+    """
+    将 yfinance 返回的 DataFrame 列名统一为小写 'open','high','low','close'
+    支持单级列名和 MultiIndex 列名（yfinance 通常返回 ('Open', 'TICKER') 形式）
+    """
     if df.empty:
         return df
+
     if isinstance(df.columns, pd.MultiIndex):
         new_columns = {}
         for col in df.columns:
-            col_lower = tuple(c.lower() for c in col)
-            if 'open' in col_lower:
+            # col 是元组，例如 ('Open', '3690.HK')，取第一个元素判断
+            price_type = col[0].lower()
+            if 'open' in price_type:
                 new_columns[col] = 'open'
-            elif 'high' in col_lower:
+            elif 'high' in price_type:
                 new_columns[col] = 'high'
-            elif 'low' in col_lower:
+            elif 'low' in price_type:
                 new_columns[col] = 'low'
-            elif 'close' in col_lower:
+            elif 'close' in price_type:
                 new_columns[col] = 'close'
         df = df.rename(columns=new_columns)
+        # 只保留需要的列
         keep = [col for col in df.columns if col in ['open','high','low','close']]
         df = df[keep]
     else:
