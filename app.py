@@ -345,6 +345,7 @@ with st.spinner("正在下载数据..."):
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=df.index, y=df['close'], mode='lines', name='收盘价'))
 fig.update_layout(title="仅显示收盘价（诊断模式）", height=400)
+st.write(type(df.index))
 st.plotly_chart(fig, use_container_width=True)
 
 # ==================== 标记管理面板 ====================
