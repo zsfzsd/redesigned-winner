@@ -341,12 +341,24 @@ with st.spinner("正在下载数据..."):
     if show_daily_kdj and period_label not in ["月线", "周线", "日线"]:
         daily_kdj = get_daily_kdj(current_stock)
 
-# ---- 临时诊断绘图 ----
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=df.index, y=df['close'], mode='lines', name='收盘价'))
-fig.update_layout(title="仅显示收盘价（诊断模式）", height=400)
-st.write(type(df.index))
-st.plotly_chart(fig, use_container_width=True)
+# ---- 诊断绘图：先确认数据可用 ----
+st.write("✅ 进入绘图模块")
+st.write(f"df 长度: {len(df)}, 列名: {df.columns.tolist()}")
+st.write(df[['open','high','low','close','K','D','J']].head(3))
+
+# 确保索引无时区
+if hasattr(df.index, 'tz') and df.index.tz is not None:
+    df.index = df.index.tz_localize(None)
+
+# 极简图：直接画收盘价，确认 Plotly 能渲染
+fig_test = go.Figure()
+fig_test.add_trace(go.Scatter(x=df.index, y=df['close'], mode='lines', name='收盘价'))
+st.write("即将绘制测试图...")
+st.plotly_chart(fig_test, use_container_width=True)
+st.write("测试图绘制完毕。")
+
+# 如果测试图不显示，下面内容不会执行；如果显示了，再恢复完整子图
+# 暂时注释掉复杂子图，先确保基础渲染通过
 
 # ==================== 标记管理面板 ====================
 st.subheader("✏️ 买卖标记管理")
