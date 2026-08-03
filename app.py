@@ -144,6 +144,7 @@ def get_data(ticker, period_str, days_back=7):
             df = yf.download(ticker, period="2y", interval="1mo", progress=False)
         
         if df is None or df.empty:
+            st.warning(f"下载失败：{ticker} {period_str}")
             return None
         df = df[['Open','High','Low','Close']]
         df.columns = ['open','high','low','close']
@@ -153,6 +154,7 @@ def get_data(ticker, period_str, days_back=7):
     if period_str in YF_INTERVALS:
         df = yf.download(ticker, period="7d", interval=period_str, progress=False)
         if df is None or df.empty:
+            st.warning(f"下载失败：{ticker} {period_str}")
             return None
         df = df[['Open','High','Low','Close']]
         df.columns = ['open','high','low','close']
@@ -164,6 +166,7 @@ def get_data(ticker, period_str, days_back=7):
         rule = CUSTOM_INTERVALS[period_str]["rule"]
         df_base = yf.download(ticker, period="7d", interval=base, progress=False)
         if df_base is None or df_base.empty:
+            st.warning(f"下载失败：{ticker} {period_str}")
             return None
         df_base.columns = ['Open','High','Low','Close','Volume']
         # 重采样为自定义周期
@@ -175,16 +178,31 @@ def get_data(ticker, period_str, days_back=7):
         }).dropna()
         df_resampled.columns = ['open','high','low','close']
         return df_resampled
+    st.warning(f"下载失败：{ticker} {period_str}")
     return None
 
 @st.cache_data(ttl=3600)
 def load_and_calc(ticker, period_str):
-    """加载数据，计算KDJ和均线，返回DataFrame"""
     try:
+        st.write(f"🔍 正在获取 {ticker} 的 {period_str} 数据...")
         df = get_data(ticker, period_str)
     except Exception as e:
-        st.error(f"❌ 数据获取异常（{ticker} {period_str}）：{e}")
+        st.error(f"❌ 异常：{e}")
         return None
+
+    if df is None:
+        st.warning(f"⚠️ get_data 返回 None (代码: {ticker}, 周期: {period_str})")
+        return None
+    if df.empty:
+        st.warning(f"⚠️ 数据为空 (代码: {ticker}, 周期: {period_str})")
+        # 打印列名以便调试
+        st.write("列名：", df.columns.tolist())
+        return None
+
+    # 原有计算代码...
+    # 计算完成后也加一个成功提示
+    st.success(f"✅ 数据加载成功，共 {len(df)} 行")
+    return df.dropna()
 
     # 诊断输出
     if df is None:
@@ -335,7 +353,13 @@ with st.spinner("正在下载数据..."):
     df = load_and_calc(current_stock, period_str)
     if df is None:
         st.error("获取数据失败，请检查代码或网络")
-        st.stop()
+       # st.stop()
+    df = load_and_calc(current_stock, period_str)
+    if df is None:
+         st.warning("⚠️ 数据获取失败，将显示空白图表")
+    # 创建一个空 DataFrame，避免后续报错，但图会空白
+    import pandas as pd
+       df = pd.DataFrame(columns=['open','high','low','close','K','D','J'])
 
     daily_kdj = None
     if show_daily_kdj and period_label not in ["月线", "周线", "日线"]:
