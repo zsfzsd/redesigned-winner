@@ -200,7 +200,7 @@ def get_data(ticker, period_str):
                 st.warning("日线处理后为空")
                 return None
 
-           rule = "ME" if period_str == "1mo" else "W-FRI"
+            rule = "ME" if period_str == "1mo" else "W-FRI"
             df_resampled = df_daily.resample(rule).agg({
                 'open': 'first',
                 'high': 'max',
