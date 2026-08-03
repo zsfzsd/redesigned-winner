@@ -174,10 +174,15 @@ def get_data(ticker, period_str):
     st.write(f"🔍 正在尝试下载 {ticker} 的 {period_str} 数据...")
     
     try:
-        # 月线、周线：用日线重采样
+        # ---- 月线、周线：用日线重采样 ----
         if period_str in ["1mo", "1wk"]:
             st.write("使用日线合成...")
-            df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
+            # 尝试多个周期，避免偶尔下载失败
+            for try_period in ["2y", "5y", "max"]:
+                st.write(f"  尝试下载日线，周期参数：{try_period}")
+                df_daily = yf.download(ticker, period=try_period, interval="1d", progress=False)
+                if df_daily is not None and not df_daily.empty:
+                    break
             if df_daily is None or df_daily.empty:
                 st.warning("日线下载为空，返回 None")
                 return None
@@ -195,7 +200,7 @@ def get_data(ticker, period_str):
             st.write(f"合成后行数：{len(df_resampled)}")
             return df_resampled
 
-        # 日线
+        # ---- 日线 ----
         if period_str == "1d":
             st.write("下载日线...")
             df = yf.download(ticker, period="3mo", interval="1d", progress=False)
@@ -207,19 +212,20 @@ def get_data(ticker, period_str):
                 df.index = df.index.tz_localize(None)
             return df
 
-        # 原生分钟线（60m/30m/15m/5m 等）
+        # ---- 原生分钟线（60m, 30m, 15m, 5m 等） ----
         if period_str in YF_INTERVALS:
-            st.write(f"下载分钟线 {period_str} ...")
-            df = yf.download(ticker, period="7d", interval=period_str, progress=False)
+            st.write(f"下载分钟线 {period_str}，使用 30 天数据以保证 KDJ 计算...")
+            df = yf.download(ticker, period="30d", interval=period_str, progress=False)
             if df is None or df.empty:
                 st.warning("分钟线下载为空")
                 return None
             df = safe_rename_ohlc(df)
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
+            st.write(f"下载到 {len(df)} 行")
             return df
 
-        # 自定义合成周期（120min、85min）
+        # ---- 自定义合成周期（120min、85min） ----
         if period_str in CUSTOM_INTERVALS:
             base = CUSTOM_INTERVALS[period_str]["base"]
             rule = CUSTOM_INTERVALS[period_str]["rule"]
