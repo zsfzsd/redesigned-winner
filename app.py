@@ -30,10 +30,10 @@ PERIOD_MAP = {
 }
 # yfinance 原生支持的间隔
 YF_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
-# 需要从更细粒度合成的周期
+# 自定义周期：用更细粒度合成
 CUSTOM_INTERVALS = {
-    "120min": {"base": "5m", "rule": "2h"},   # 用5分钟数据 resample 成2小时=120分钟
-    "85min": {"base": "5m", "rule": "85min"},  # 直接 resample 85分钟
+    "120min": {"base": "5m", "rule": "2h"},
+    "85min":  {"base": "5m", "rule": "85min"},
 }
 
 # KDJ 参数
@@ -50,9 +50,8 @@ REMARK_OPTIONS = ["突破买入", "止损卖出", "抄底", "追高", "突破卖
 # 数据库路径
 DB_PATH = "trade_marks.db"
 
-# ==================== 用户登录 ====================
+# ==================== 数据库初始化 ====================
 def init_db():
-    """初始化用户表和标记表"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users
@@ -66,7 +65,7 @@ def init_db():
                   direction TEXT,
                   remark TEXT,
                   FOREIGN KEY (username) REFERENCES users(username))''')
-    # 插入默认用户（用户自行修改密码）
+    # 创建默认用户 admin/admin
     default_user = "admin"
     default_pass = hashlib.sha256("admin".encode()).hexdigest()
     try:
@@ -78,6 +77,7 @@ def init_db():
 
 init_db()
 
+# ==================== 用户认证 ====================
 def login_user(username, password):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -129,94 +129,54 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ==================== 数据获取函数 ====================
-def get_data(ticker, period_str, days_back=7):
-    """
-    获取港股分钟/日/周/月数据。
-    对于自定义周期，用更细粒度数据合成。
-    """
-    # 处理月线、周线、日线 —— 需要更长的历史保证 KDJ 计算
-    if period_str in ["1mo", "1wk", "1d"]:
-        if period_str == "1d":
-            df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-        elif period_str == "1wk":
-            df = yf.download(ticker, period="6mo", interval="1wk", progress=False)
-        else:  # 1mo
-            df = yf.download(ticker, period="2y", interval="1mo", progress=False)
-        
-        if df is None or df.empty:
-            st.warning(f"下载失败：{ticker} {period_str}")
-            return None
-        df = df[['Open','High','Low','Close']]
-        df.columns = ['open','high','low','close']
-        return df
-
-    # 对于分钟线，用 period="7d" 获取7天内最高分辨率数据
-    if period_str in YF_INTERVALS:
+def get_data(ticker, period_str):
+    """下载港股数据，支持自定义周期合成"""
+    # 处理月线、周线、日线，需要更长历史以保证 KDJ 计算
+    if period_str == "1mo":
+        df = yf.download(ticker, period="2y", interval="1mo", progress=False)
+    elif period_str == "1wk":
+        df = yf.download(ticker, period="6mo", interval="1wk", progress=False)
+    elif period_str == "1d":
+        df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+    elif period_str in YF_INTERVALS:
+        # 分钟线，近 7 天
         df = yf.download(ticker, period="7d", interval=period_str, progress=False)
-        if df is None or df.empty:
-            st.warning(f"下载失败：{ticker} {period_str}")
-            return None
-        df = df[['Open','High','Low','Close']]
-        df.columns = ['open','high','low','close']
-        return df
-
-    # 自定义周期合成
-    if period_str in CUSTOM_INTERVALS:
+    elif period_str in CUSTOM_INTERVALS:
         base = CUSTOM_INTERVALS[period_str]["base"]
         rule = CUSTOM_INTERVALS[period_str]["rule"]
         df_base = yf.download(ticker, period="7d", interval=base, progress=False)
         if df_base is None or df_base.empty:
-            st.warning(f"下载失败：{ticker} {period_str}")
             return None
-        df_base.columns = ['Open','High','Low','Close','Volume']
-        # 重采样为自定义周期
+        # 重命名为标准列名（yfinance 有时返回大小写混合）
+        df_base.columns = [col.lower() for col in df_base.columns]
         df_resampled = df_base.resample(rule).agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last'
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last'
         }).dropna()
-        df_resampled.columns = ['open','high','low','close']
         return df_resampled
-    st.warning(f"下载失败：{ticker} {period_str}")
-    return None
+    else:
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    # 统一列名为小写
+    df.columns = [col.lower() for col in df.columns]
+    # 只保留需要的列
+    df = df[['open', 'high', 'low', 'close']]
+    # 去除时区信息
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+    return df
 
 @st.cache_data(ttl=3600)
 def load_and_calc(ticker, period_str):
-    try:
-        st.write(f"🔍 正在获取 {ticker} 的 {period_str} 数据...")
-        df = get_data(ticker, period_str)
-    except Exception as e:
-        st.error(f"❌ 异常：{e}")
+    """加载数据，计算 KDJ 和均线"""
+    df = get_data(ticker, period_str)
+    if df is None or df.empty:
         return None
-
-    if df is None:
-        st.warning(f"⚠️ get_data 返回 None (代码: {ticker}, 周期: {period_str})")
-        return None
-    if df.empty:
-        st.warning(f"⚠️ 数据为空 (代码: {ticker}, 周期: {period_str})")
-        # 打印列名以便调试
-        st.write("列名：", df.columns.tolist())
-        return None
-
-    # 原有计算代码...
-    # 计算完成后也加一个成功提示
-    st.success(f"✅ 数据加载成功，共 {len(df)} 行")
-    return df.dropna()
-
-    # 诊断输出
-    if df is None:
-        st.warning(f"⚠️ get_data 返回 None，代码：{ticker}，周期：{period_str}")
-        return None
-    if df.empty:
-        st.warning(f"⚠️ 数据为空 DataFrame，代码：{ticker}，周期：{period_str}")
-        # 还可以打印列名看看
-        st.write("返回的列：", df.columns.tolist())
-        return None
-
-    # 先显示一下前几行，确认有内容
-    st.success(f"✅ 成功获取 {len(df)} 条数据")
-    st.dataframe(df.head(3), use_container_width=True)
 
     # 计算均线
     for ma in MA_PERIODS:
@@ -232,16 +192,21 @@ def load_and_calc(ticker, period_str):
     df['K'] = k
     df['D'] = d
     df['J'] = j
-    st.write("最终要绘图的数据：", df[['close','K','D','J']].tail())
-    return df.dropna()
+
+    result = df.dropna()
+    if result.empty:
+        return None
+    return result
 
 def get_daily_kdj(ticker):
-    """获取日线级别KDJ（用于叠加到分钟图）"""
+    """获取日线级别 KDJ，用于叠加到分钟图"""
     df_daily = yf.download(ticker, period="3mo", interval="1d", progress=False)
     if df_daily.empty:
         return None
-    df_daily = df_daily[['Open','High','Low','Close']]
-    df_daily.columns = ['open','high','low','close']
+    df_daily.columns = [col.lower() for col in df_daily.columns]
+    if df_daily.index.tz is not None:
+        df_daily.index = df_daily.index.tz_localize(None)
+
     low_min = df_daily['low'].rolling(window=KDJ_N).min()
     high_max = df_daily['high'].rolling(window=KDJ_N).max()
     rsv = (df_daily['close'] - low_min) / (high_max - low_min) * 100
@@ -251,7 +216,7 @@ def get_daily_kdj(ticker):
     df_daily['KDaily'] = k
     df_daily['DDaily'] = d
     df_daily['JDaily'] = j
-    return df_daily[['KDaily','DDaily','JDaily']].dropna()
+    return df_daily[['KDaily', 'DDaily', 'JDaily']].dropna()
 
 # ==================== 标记管理 ====================
 def add_mark(username, stock_code, mark_time, price, direction, remark):
@@ -289,9 +254,9 @@ def delete_mark(mark_id):
 # ==================== 主界面 ====================
 st.title("📈 港股 KDJ 标记工具")
 
-# ---- 侧边栏：退出登录和手机横屏按钮 ----
+# ---- 侧边栏 ----
 with st.sidebar:
-    st.write(f"👤 {st.session_state.username}")
+    st.write(f"👤 已登录：{st.session_state.username}")
     if st.button("退出登录"):
         st.session_state.logged_in = False
         st.session_state.username = ""
@@ -299,45 +264,47 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("📱 显示模式")
-    if st.button("🔁 切换横屏/竖屏"):
-        # 通过JS旋转页面（简单实现）
+    if st.button("🔁 请求横屏"):
         st.components.v1.html(
             """
             <script>
             if (window.screen.orientation && window.screen.orientation.lock) {
-                window.screen.orientation.lock('landscape').catch(() => {});
+                window.screen.orientation.lock('landscape').catch(() => {
+                    alert('横屏锁定被拒绝，请手动旋转手机');
+                });
             } else {
-                alert('请手动将手机横屏');
+                alert('您的浏览器不支持自动横屏，请手动旋转');
             }
             </script>
             """,
             height=0,
         )
-    st.caption("点击按钮后，浏览器会自动请求横屏；如被拒绝请手动旋转。")
+    st.caption("点击后浏览器可能请求横屏，如被拒绝请手动旋转。")
 
     st.markdown("---")
     st.subheader("⏰ 提醒配置（预留）")
-    st.text_input("J值超买阈值", value="100", disabled=True, key="remind_overbought")
-    st.text_input("J值超卖阈值", value="0", disabled=True, key="remind_oversold")
-    st.caption("功能开发中，敬请期待")
+    st.text_input("J值超买阈值", value="100", disabled=True)
+    st.text_input("J值超卖阈值", value="0", disabled=True)
+    st.caption("功能开发中...")
 
 # ---- 股票选择 ----
 col1, col2 = st.columns([3, 1])
 with col1:
-    selected_stock = None
+    # 固定股票按钮
     fixed_cols = st.columns(len(FIXED_STOCKS))
     for i, code in enumerate(FIXED_STOCKS):
         if fixed_cols[i].button(code, use_container_width=True):
             st.session_state.selected_stock = code
             st.session_state.manual_code = ""
-    # 手动输入
-    manual_code = st.text_input("或手动输入代码（如 0700.HK）", key="manual_code")
+    # 手动输入代码
+    manual_code = st.text_input("或手动输入港股代码（如 0700.HK）", key="manual_code")
     if manual_code:
         if st.button("查看手动代码"):
             st.session_state.selected_stock = manual_code.upper()
 
+# 默认选中第一支
 if "selected_stock" not in st.session_state:
-    st.session_state.selected_stock = FIXED_STOCKS[0]  # 默认第一支
+    st.session_state.selected_stock = FIXED_STOCKS[0]
 
 current_stock = st.session_state.selected_stock
 
@@ -345,44 +312,124 @@ current_stock = st.session_state.selected_stock
 period_label = st.selectbox("选择周期", list(PERIOD_MAP.keys()))
 period_str = PERIOD_MAP[period_label]
 
-# ---- 叠加日线KDJ选项 ----
+# ---- 叠加日线 KDJ ----
 show_daily_kdj = st.checkbox("叠加日线 KDJ（仅分钟周期有效）", value=False)
 
-# ---- 加载数据 ----
+# ---- 数据加载 ----
 with st.spinner("正在下载数据..."):
     df = load_and_calc(current_stock, period_str)
-    if df is None:
-        st.error("获取数据失败，请检查代码或网络")
-       # st.stop()
-    df = load_and_calc(current_stock, period_str)
-    if df is None:
-         st.warning("⚠️ 数据获取失败，将显示空白图表")
-    # 创建一个空 DataFrame，避免后续报错，但图会空白
-    import pandas as pd
-       df = pd.DataFrame(columns=['open','high','low','close','K','D','J'])
 
-    daily_kdj = None
-    if show_daily_kdj and period_label not in ["月线", "周线", "日线"]:
-        daily_kdj = get_daily_kdj(current_stock)
+if df is None:
+    st.error(f"❌ 无法获取 {current_stock} 的 {period_label} 数据，请检查代码或稍后重试。")
+    st.stop()
 
-# ---- 诊断绘图：先确认数据可用 ----
-st.write("✅ 进入绘图模块")
-st.write(f"df 长度: {len(df)}, 列名: {df.columns.tolist()}")
-st.write(df[['open','high','low','close','K','D','J']].head(3))
+st.success(f"✅ 已加载 {len(df)} 条数据")
 
-# 确保索引无时区
-if hasattr(df.index, 'tz') and df.index.tz is not None:
+# 日线 KDJ 叠加
+daily_kdj = None
+if show_daily_kdj and period_label not in ["月线", "周线", "日线"]:
+    daily_kdj = get_daily_kdj(current_stock)
+    if daily_kdj is None:
+        st.warning("无法获取日线 KDJ 数据")
+
+# ==================== 绘图 ====================
+# 确保无时区
+if df.index.tz is not None:
     df.index = df.index.tz_localize(None)
 
-# 极简图：直接画收盘价，确认 Plotly 能渲染
-fig_test = go.Figure()
-fig_test.add_trace(go.Scatter(x=df.index, y=df['close'], mode='lines', name='收盘价'))
-st.write("即将绘制测试图...")
-st.plotly_chart(fig_test, use_container_width=True)
-st.write("测试图绘制完毕。")
+fig = make_subplots(
+    rows=2, cols=1,
+    shared_xaxes=True,
+    vertical_spacing=0.03,
+    row_heights=[0.6, 0.4],
+    subplot_titles=(f"{current_stock} K线 & 均线", "KDJ 指标")
+)
 
-# 如果测试图不显示，下面内容不会执行；如果显示了，再恢复完整子图
-# 暂时注释掉复杂子图，先确保基础渲染通过
+# ---- 上图：K线与均线 ----
+fig.add_trace(
+    go.Candlestick(
+        x=df.index,
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name="K线",
+        increasing_line_color='red',
+        decreasing_line_color='green',
+    ),
+    row=1, col=1
+)
+
+colors = ['blue', 'orange', 'purple', 'brown']
+for i, ma in enumerate(MA_PERIODS):
+    col_name = f'MA{ma}'
+    if col_name in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=df[col_name], mode='lines',
+                name=col_name, line=dict(color=colors[i], width=1)
+            ),
+            row=1, col=1
+        )
+
+# ---- 下图：KDJ ----
+for key, color, dash in [('K', 'blue', None), ('D', 'orange', None), ('J', 'red', 'dot')]:
+    if key in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=df[key], mode='lines',
+                name=key, line=dict(color=color, width=1.5, dash=dash)
+            ),
+            row=2, col=1
+        )
+
+# ---- 叠加日线 KDJ（虚线） ----
+if daily_kdj is not None:
+    # 将日线数据向前填充到分钟索引
+    combined = pd.concat([df[['K']], daily_kdj], axis=1).ffill()
+    for val, color in [('KDaily', 'cyan'), ('DDaily', 'magenta'), ('JDaily', 'yellow')]:
+        if val in combined.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=combined.index, y=combined[val], mode='lines',
+                    name=f'日线{val[0]}', line=dict(color=color, width=1, dash='dash'),
+                    opacity=0.7
+                ),
+                row=2, col=1
+            )
+
+# ---- 买卖标记 ----
+marks = get_marks(st.session_state.username, current_stock)
+for mark in marks:
+    mark_id, mark_time, price, direction, remark = mark
+    try:
+        mark_dt = pd.to_datetime(mark_time)
+    except:
+        continue
+    color = 'red' if direction == '买入' else 'green'
+    symbol = 'triangle-up' if direction == '买入' else 'triangle-down'
+    fig.add_trace(
+        go.Scatter(
+            x=[mark_dt], y=[price],
+            mode='markers+text',
+            marker=dict(color=color, size=10, symbol=symbol),
+            text=[f"{direction}<br>{remark}"],
+            textposition="top center",
+            showlegend=False,
+        ),
+        row=1, col=1
+    )
+
+fig.update_layout(
+    xaxis_rangeslider_visible=False,
+    hovermode='x unified',
+    height=700,
+    margin=dict(l=10, r=10, t=30, b=10),
+)
+fig.update_yaxes(title_text="价格", row=1, col=1)
+fig.update_yaxes(title_text="KDJ", row=2, col=1, range=[-20, 120])
+
+st.plotly_chart(fig, use_container_width=True)
 
 # ==================== 标记管理面板 ====================
 st.subheader("✏️ 买卖标记管理")
@@ -398,7 +445,7 @@ with tab_add:
     with col_a3:
         mark_remark = st.selectbox("备注", REMARK_OPTIONS)
     with col_a4:
-        # 自动获取最接近时间的价格
+        # 自动匹配最近时间的价格
         try:
             mark_dt = pd.to_datetime(mark_time)
             if mark_dt in df.index:
@@ -406,7 +453,6 @@ with tab_add:
             else:
                 idx = df.index.get_indexer([mark_dt], method='nearest')[0]
                 auto_price = df.iloc[idx]['close']
-                mark_time = str(df.index[idx])  # 校正为实际时间
         except:
             auto_price = 0.0
         price_input = st.number_input("价格", value=float(auto_price), step=0.01)
@@ -418,7 +464,6 @@ with tab_add:
 
 with tab_view:
     if marks:
-        # 转换为DataFrame展示
         mark_df = pd.DataFrame(marks, columns=["ID", "时间", "价格", "方向", "备注"])
         st.dataframe(mark_df.set_index("ID"), use_container_width=True)
         delete_id = st.number_input("输入要删除的标记ID", min_value=1, step=1)
@@ -432,7 +477,6 @@ with tab_view:
 with tab_modify:
     if marks:
         modify_id = st.number_input("输入要修改的标记ID", min_value=1, step=1, key="mod_id")
-        # 获取当前标记信息
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT mark_time, price, direction, remark FROM marks WHERE id=?", (modify_id,))
@@ -443,7 +487,11 @@ with tab_modify:
             new_time = st.text_input("新时间", value=old_time)
             new_price = st.number_input("新价格", value=float(old_price), step=0.01)
             new_dir = st.selectbox("新方向", ["买入", "卖出"], index=0 if old_dir=="买入" else 1)
-            new_remark = st.selectbox("新备注", REMARK_OPTIONS, index=REMARK_OPTIONS.index(old_remark) if old_remark in REMARK_OPTIONS else 0)
+            if old_remark in REMARK_OPTIONS:
+                old_idx = REMARK_OPTIONS.index(old_remark)
+            else:
+                old_idx = 0
+            new_remark = st.selectbox("新备注", REMARK_OPTIONS, index=old_idx)
             if st.button("✏️ 保存修改"):
                 update_mark(modify_id, new_time, new_price, new_dir, new_remark)
                 st.success("修改已保存")
@@ -453,5 +501,4 @@ with tab_modify:
     else:
         st.info("暂无标记可修改")
 
-# ---- 数据增量更新提示 ----
-st.caption(f"数据覆盖最近7天，最后更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+st.caption(f"数据覆盖范围：{period_label}，最后更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
