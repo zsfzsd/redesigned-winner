@@ -7,6 +7,7 @@ from plotly.subplots import make_subplots
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
+import traceback
 
 # ==================== 页面配置 ====================
 st.set_page_config(
@@ -159,71 +160,96 @@ def safe_rename_ohlc(df):
         df = df[['open','high','low','close']]
     return df
 
-# ==================== 数据获取函数 ====================
+# ==================== 数据获取函数（带诊断） ====================
 def get_data(ticker, period_str):
     """下载港股数据，月线/周线通过日线合成，分钟线用原生或自定义"""
-    # 月线、周线：用日线重采样
-    if period_str in ["1mo", "1wk"]:
-        df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
-        if df_daily is None or df_daily.empty:
-            return None
-        df_daily = safe_rename_ohlc(df_daily)
-        if df_daily.empty:
-            return None
-        rule = "M" if period_str == "1mo" else "W"
-        df_resampled = df_daily.resample(rule).agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last'
-        }).dropna()
-        return df_resampled
+    st.write(f"🔍 正在尝试下载 {ticker} 的 {period_str} 数据...")
+    
+    try:
+        # 月线、周线：用日线重采样
+        if period_str in ["1mo", "1wk"]:
+            st.write("使用日线合成...")
+            df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
+            if df_daily is None or df_daily.empty:
+                st.warning("日线下载为空，返回 None")
+                return None
+            df_daily = safe_rename_ohlc(df_daily)
+            if df_daily.empty:
+                st.warning("日线处理后为空")
+                return None
+            rule = "M" if period_str == "1mo" else "W"
+            df_resampled = df_daily.resample(rule).agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last'
+            }).dropna()
+            st.success(f"合成成功，行数：{len(df_resampled)}")
+            return df_resampled
 
-    # 日线
-    if period_str == "1d":
-        df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-        if df is None or df.empty:
-            return None
-        df = safe_rename_ohlc(df)
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        return df
+        # 日线
+        if period_str == "1d":
+            st.write("下载日线...")
+            df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+            if df is None or df.empty:
+                st.warning("日线下载为空")
+                return None
+            df = safe_rename_ohlc(df)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            st.success(f"日线下载成功，行数：{len(df)}")
+            return df
 
-    # 原生分钟线
-    if period_str in YF_INTERVALS:
-        df = yf.download(ticker, period="7d", interval=period_str, progress=False)
-        if df is None or df.empty:
-            return None
-        df = safe_rename_ohlc(df)
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        return df
+        # 原生分钟线
+        if period_str in YF_INTERVALS:
+            st.write(f"下载分钟线 {period_str} ...")
+            df = yf.download(ticker, period="7d", interval=period_str, progress=False)
+            if df is None or df.empty:
+                st.warning("分钟线下载为空")
+                return None
+            df = safe_rename_ohlc(df)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            st.success(f"分钟线下载成功，行数：{len(df)}")
+            return df
 
-    # 自定义合成周期
-    if period_str in CUSTOM_INTERVALS:
-        base = CUSTOM_INTERVALS[period_str]["base"]
-        rule = CUSTOM_INTERVALS[period_str]["rule"]
-        df_base = yf.download(ticker, period="7d", interval=base, progress=False)
-        if df_base is None or df_base.empty:
-            return None
-        df_base = safe_rename_ohlc(df_base)
-        df_resampled = df_base.resample(rule).agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last'
-        }).dropna()
-        return df_resampled
+        # 自定义合成周期
+        if period_str in CUSTOM_INTERVALS:
+            base = CUSTOM_INTERVALS[period_str]["base"]
+            rule = CUSTOM_INTERVALS[period_str]["rule"]
+            st.write(f"使用 {base} 合成 {period_str} ...")
+            df_base = yf.download(ticker, period="7d", interval=base, progress=False)
+            if df_base is None or df_base.empty:
+                st.warning(f"{base} 数据为空，无法合成")
+                return None
+            df_base = safe_rename_ohlc(df_base)
+            df_resampled = df_base.resample(rule).agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last'
+            }).dropna()
+            st.success(f"合成成功，行数：{len(df_resampled)}")
+            return df_resampled
 
-    return None
+        st.warning(f"不支持的周期: {period_str}")
+        return None
+
+    except Exception as e:
+        st.error(f"❌ get_data 发生异常: {e}")
+        st.code(traceback.format_exc())
+        return None
 
 @st.cache_data(ttl=3600)
 def load_and_calc(ticker, period_str):
     """加载数据，计算 KDJ 和均线"""
+    st.write(f"调用 load_and_calc: {ticker} {period_str}")
     df = get_data(ticker, period_str)
     if df is None or df.empty:
+        st.warning("load_and_calc: 数据为空或None")
         return None
 
+    st.write(f"数据列名: {df.columns.tolist()}")
     for ma in MA_PERIODS:
         df[f'MA{ma}'] = df['close'].rolling(window=ma).mean()
 
@@ -239,7 +265,9 @@ def load_and_calc(ticker, period_str):
 
     result = df.dropna()
     if result.empty:
+        st.warning("KDJ 计算后数据为空（可能数据量不足）")
         return None
+    st.success(f"KDJ 计算完成，最终行数: {len(result)}")
     return result
 
 def get_daily_kdj(ticker):
