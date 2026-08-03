@@ -269,18 +269,23 @@ def get_data(ticker, period_str):
 
 # ⚠️ 注意：暂时取消缓存，确保每次诊断都是最新结果
 def load_and_calc(ticker, period_str):
-    """加载数据，计算 KDJ 和均线（无缓存版）"""
+    """加载数据，计算 KDJ 和均线（自动跳过无法计算的均线）"""
     st.write(f"调用 load_and_calc: {ticker} {period_str}")
     df = get_data(ticker, period_str)
-    st.write(f"get_data 返回: 类型 {type(df)}, 是否空: {df.empty if df is not None else 'None'}")
     if df is None or df.empty:
         st.warning("load_and_calc: 数据为空或None")
         return None
 
-    st.write(f"数据列名: {df.columns.tolist()}")
-    for ma in MA_PERIODS:
-        df[f'MA{ma}'] = df['close'].rolling(window=ma).mean()
+    st.write(f"数据列名: {df.columns.tolist()}, 行数: {len(df)}")
 
+    # 均线：只计算数据量足够的
+    for ma in MA_PERIODS:
+        if len(df) >= ma:
+            df[f'MA{ma}'] = df['close'].rolling(window=ma).mean()
+        else:
+            st.info(f"数据量({len(df)})不足以计算 MA{ma}，已跳过")
+
+    # KDJ 计算
     low_min = df['low'].rolling(window=KDJ_N).min()
     high_max = df['high'].rolling(window=KDJ_N).max()
     rsv = (df['close'] - low_min) / (high_max - low_min) * 100
@@ -291,13 +296,14 @@ def load_and_calc(ticker, period_str):
     df['D'] = d
     df['J'] = j
 
-    result = df.dropna()
+    # 只删除核心列为空的行（不要求均线全部有值）
+    result = df.dropna(subset=['open', 'high', 'low', 'close', 'K', 'D', 'J'])
     if result.empty:
-        st.warning("KDJ 计算后数据为空（可能数据量不足）")
+        st.warning("KDJ 计算后有效数据为空（可能数据量不足 KDJ 周期）")
         return None
-    st.success(f"KDJ 计算完成，最终行数: {len(result)}")
+    st.success(f"KDJ 计算完成，最终有效行数: {len(result)}")
     return result
-
+    
 def get_daily_kdj(ticker):
     """获取日线级别 KDJ"""
     df_daily = yf.download(ticker, period="3mo", interval="1d", progress=False)
